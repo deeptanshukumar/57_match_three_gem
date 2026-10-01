@@ -3,6 +3,8 @@ from game.board import Board, GRID_SIZE, TILE_SIZE
 
 
 class GameEngine:
+    HINT_DELAY_MS = 5000
+
     def __init__(self, width, height):
         self.width = width
         self.height = height
@@ -13,8 +15,12 @@ class GameEngine:
 
         self.font_big = pygame.font.SysFont(None, 48)
         self.font_small = pygame.font.SysFont(None, 24)
+        self.last_action_ms = pygame.time.get_ticks()
+        self.hint_pair = None
 
     def handle_click(self, mouse_pos):
+        self.last_action_ms = pygame.time.get_ticks()
+        self.hint_pair = None
         if self.board.is_game_over() or self.board.is_animating():
             return
 
@@ -38,9 +44,20 @@ class GameEngine:
 
     def reset(self):
         self.board.reset()
+        self.last_action_ms = pygame.time.get_ticks()
+        self.hint_pair = None
 
     def update(self):
         self.board.update()
+        if self.board.is_game_over() or self.board.is_animating():
+            self.hint_pair = None
+            return
+        idle_ms = pygame.time.get_ticks() - self.last_action_ms
+        if idle_ms >= self.HINT_DELAY_MS and self.hint_pair is None:
+            try:
+                self.hint_pair = self.board.find_hint()
+            except Exception:
+                self.hint_pair = None
 
     def render(self, screen):
         screen.fill((32, 34, 40))
@@ -55,6 +72,25 @@ class GameEngine:
         screen.blit(hud_surf, (self.width // 2 - hud_surf.get_width() // 2, 55))
 
         self.board.render(screen)
+
+        # Idle hint: pulsing outline over swappable pair after 5s idle
+        if self.hint_pair is not None and not self.board.is_game_over():
+            idle_ms = pygame.time.get_ticks() - self.last_action_ms
+            if idle_ms >= self.HINT_DELAY_MS and not self.board.is_animating():
+                import math
+
+                pulse = (math.sin(pygame.time.get_ticks() * 0.01) + 1) / 2
+                glow_w = 3 + int(pulse * 3)
+                for hr, hc in self.hint_pair:
+                    hx = self.board.offset_x + hc * TILE_SIZE
+                    gem = self.board.grid[hr][hc]
+                    hy = self.board.offset_y + (
+                        gem.current_y if gem else hr * TILE_SIZE
+                    )
+                    hint_rect = pygame.Rect(hx + 2, hy + 2, TILE_SIZE - 4, TILE_SIZE - 4)
+                    pygame.draw.rect(
+                        screen, (255, 255, 100), hint_rect, width=glow_w, border_radius=12
+                    )
 
         inst_surf = self.font_small.render(
             "Swap gems to match 3+. Press [R] to Restart.",

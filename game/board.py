@@ -199,6 +199,42 @@ class Board:
                         queue.append(t)
         return matched
 
+    def find_hint(self):
+        """Find adjacent pair that would produce a match if swapped.
+
+        Returns ((r1,c1),(r2,c2)) or None. Bomb swaps count as valid
+        (fallback) since swapping a bomb always detonates.
+        """
+        if self.find_matches():
+            return None  # board not settled
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if self.grid[r][c] is None:
+                    continue
+                for dr, dc in [(0, 1), (1, 0)]:
+                    r2, c2 = r + dr, c + dc
+                    if r2 >= GRID_SIZE or c2 >= GRID_SIZE:
+                        continue
+                    if self.grid[r2][c2] is None:
+                        continue
+                    g1, g2 = self.grid[r][c], self.grid[r2][c2]
+                    self.grid[r][c], self.grid[r2][c2] = g2, g1
+                    matches = self.find_matches()
+                    self.grid[r][c], self.grid[r2][c2] = g1, g2
+                    if matches:
+                        return ((r, c), (r2, c2))
+        # Fallback: any adjacent bomb swap detonates
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                gem = self.grid[r][c]
+                if gem is not None and getattr(gem, "is_bomb", False):
+                    for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                        r2, c2 = r + dr, c + dc
+                        if 0 <= r2 < GRID_SIZE and 0 <= c2 < GRID_SIZE:
+                            if self.grid[r2][c2] is not None:
+                                return ((r, c), (r2, c2))
+        return None
+
     def drop_and_refill(self):
         for c in range(GRID_SIZE):
             empty_slots = 0
