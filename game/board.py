@@ -46,6 +46,7 @@ class Board:
         self.selected = None
         self.score = 0
         self.moves_remaining = max_moves
+        self.last_combo = 0
         self.reset()
 
     def reset(self):
@@ -53,6 +54,7 @@ class Board:
         self.score = 0
         self.moves_remaining = self.max_moves
         self.selected = None
+        self.last_combo = 0
         for r in range(GRID_SIZE):
             for c in range(GRID_SIZE):
                 color = random.choice(GEM_COLORS)
@@ -61,6 +63,7 @@ class Board:
                 self.grid[r][c] = gem
 
         self.resolve_matches()
+        self.last_combo = 0
 
     def is_animating(self):
         """Returns True if any gem is currently dropping down."""
@@ -141,16 +144,24 @@ class Board:
                 self.grid[r][c] = gem
 
     def resolve_matches(self):
-        total_cleared = 0
+        """Clear matches with cascade combo multiplier.
+
+        1x for initial matches, 2x for secondary drops, 3x for tertiary, etc.
+        Returns total combo points (cleared * 10 * combo per cascade level).
+        """
+        combo = 0
+        total_points = 0
         while True:
             matches = self.find_matches()
             if not matches:
                 break
-            total_cleared += len(matches)
+            combo += 1
+            total_points += len(matches) * 10 * combo
             for r, c in matches:
                 self.grid[r][c] = None
             self.drop_and_refill()
-        return total_cleared
+        self.last_combo = combo
+        return total_points
 
     def process_swap(self, pos1, pos2):
         if not self.is_adjacent(pos1, pos2) or self.is_game_over() or self.is_animating():
@@ -165,8 +176,8 @@ class Board:
 
         self.moves_remaining -= 1
 
-        cleared = self.resolve_matches()
-        self.score += cleared * 10
+        points = self.resolve_matches()
+        self.score += points
         return True
 
     def is_game_over(self):
