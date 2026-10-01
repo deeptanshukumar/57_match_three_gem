@@ -15,10 +15,12 @@ GEM_COLORS = [
 
 class Gem:
    
-    def __init__(self, color, target_row, col):
+    def __init__(self, color, target_row, col, is_bomb=False, bomb_dir="row"):
         self.color = color
         self.target_row = target_row
         self.col = col
+        self.is_bomb = is_bomb
+        self.bomb_dir = bomb_dir  # "row" clears row, "col" clears column
         # Start higher up to animate falling down
         self.current_y = (target_row - 2) * TILE_SIZE
         self.target_y = target_row * TILE_SIZE
@@ -122,6 +124,79 @@ class Board:
                 ):
                     matched.update([(r, c), (r + 1, c), (r + 2, c)])
 
+        return self._expand_bombs(matched)
+
+    def find_match_groups(self):
+        """Return contiguous same-color runs >=3 as [{'cells':[(r,c)..], 'dir':'row'/'col'}]."""
+        groups = []
+        # Horizontal runs
+        for r in range(GRID_SIZE):
+            c = 0
+            while c < GRID_SIZE:
+                if self.grid[r][c] is None:
+                    c += 1
+                    continue
+                color = self.grid[r][c].color
+                run = [(r, c)]
+                cc = c + 1
+                while (
+                    cc < GRID_SIZE
+                    and self.grid[r][cc] is not None
+                    and self.grid[r][cc].color == color
+                ):
+                    run.append((r, cc))
+                    cc += 1
+                if len(run) >= 3:
+                    groups.append({"cells": run, "dir": "row"})
+                c = cc if len(run) > 1 else c + 1
+        # Vertical runs
+        for c in range(GRID_SIZE):
+            r = 0
+            while r < GRID_SIZE:
+                if self.grid[r][c] is None:
+                    r += 1
+                    continue
+                color = self.grid[r][c].color
+                run = [(r, c)]
+                rr = r + 1
+                while (
+                    rr < GRID_SIZE
+                    and self.grid[rr][c] is not None
+                    and self.grid[rr][c].color == color
+                ):
+                    run.append((rr, c))
+                    rr += 1
+                if len(run) >= 3:
+                    groups.append({"cells": run, "dir": "col"})
+                r = rr if len(run) > 1 else r + 1
+        return groups
+
+    def _expand_bombs(self, matched):
+        """If a matched cell holds a Bomb Gem, add its full row/column (chain-aware)."""
+        matched = set(matched)
+        if not matched:
+            return matched
+        queue = list(matched)
+        seen_bombs = set()
+        while queue:
+            r, c = queue.pop()
+            if not (0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE):
+                continue
+            gem = self.grid[r][c]
+            if (
+                gem is not None
+                and getattr(gem, "is_bomb", False)
+                and (r, c) not in seen_bombs
+            ):
+                seen_bombs.add((r, c))
+                if getattr(gem, "bomb_dir", "row") == "col":
+                    targets = [(rr, c) for rr in range(GRID_SIZE)]
+                else:
+                    targets = [(r, cc) for cc in range(GRID_SIZE)]
+                for t in targets:
+                    if t not in matched:
+                        matched.add(t)
+                        queue.append(t)
         return matched
 
     def drop_and_refill(self):
@@ -147,6 +222,8 @@ class Board:
         """Clear matches with cascade combo multiplier.
 
         1x for initial matches, 2x for secondary drops, 3x for tertiary, etc.
+        4-in-a-row runs spawn a glowing Bomb Gem (kept, not cleared).
+        Bomb Gems in a match detonate their full row/column.
         Returns total combo points (cleared * 10 * combo per cascade level).
         """
         combo = 0
@@ -157,17 +234,123 @@ class Board:
                 break
             combo += 1
             total_points += len(matches) * 10 * combo
+
+            # Detect 4+ runs -> spawn one bomb per run (middle cell, keep it)
+            spawn = {}
+            for g in self.find_match_groups():
+                cells = g["cells"]
+                if len(cells) >= 4:
+                    # Don't spawn if a bomb is already detonating here
+                    if any(
+                        self.grid[r][c] is not None
+                        and getattr(self.grid[r][c], "is_bomb", False)
+                        for r, c in cells
+                    ):
+                        continue
+                    sr, sc = cells[len(cells) // 2]
+                    if (sr, sc) in matches and (sr, sc) not in spawn:
+                        spawn[(sr, sc)] = g["dir"]
+
             for r, c in matches:
-                self.grid[r][c] = None
+                if (r, c) not in spawn:
+                    self.grid[r][c] = None
+
+            for (sr, sc), bdir in spawn.items():
+                old = self.grid[sr][sc]
+                color = old.color if old is not None else random.choice(GEM_COLORS)
+                bomb = Gem(color, sr, sc, is_bomb=True, bomb_dir=bdir)
+                bomb.current_y = sr * TILE_SIZE
+                bomb.target_y = sr * TILE_SIZE
+                bomb.target_row = sr
+                self.grid[sr][sc] = bomb
+
             self.drop_and_refill()
         self.last_combo = combo
         return total_points
+
+    def _collect_bomb_blast(self, positions):
+        """Return full blast set for bombs at positions (row or column each, chain-aware)."""
+        blast = set(positions)
+        queue = list(positions)
+        seen = set()
+        while queue:
+            r, c = queue.pop()
+            if (r, c) in seen:
+                continue
+            seen.add((r, c))
+            gem = (
+                self.grid[r][c]
+                if 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE
+                else None
+            )
+            if gem is None or not getattr(gem, "is_bomb", False):
+                continue
+            if getattr(gem, "bomb_dir", "row") == "col":
+                targets = [(rr, c) for rr in range(GRID_SIZE)]
+            else:
+                targets = [(r, cc) for cc in range(GRID_SIZE)]
+            for t in targets:
+                if t not in blast:
+                    blast.add(t)
+                    queue.append(t)
+        return blast
 
     def process_swap(self, pos1, pos2):
         if not self.is_adjacent(pos1, pos2) or self.is_game_over() or self.is_animating():
             return False
 
         self.swap_gems(pos1, pos2)
+
+        # Bomb detonation: swapping a bomb detonates even without a color match
+        bomb_positions = [
+            p
+            for p in (pos1, pos2)
+            if self.grid[p[0]][p[1]] is not None
+            and getattr(self.grid[p[0]][p[1]], "is_bomb", False)
+        ]
+        if bomb_positions:
+            self.moves_remaining -= 1
+            blast = self._collect_bomb_blast(bomb_positions)
+            # combo level 1 for the detonation itself
+            points = len(blast) * 10 * 1
+            for r, c in blast:
+                self.grid[r][c] = None
+            self.drop_and_refill()
+            # Cascades after blast use combo starting at 2
+            combo = 1
+            while True:
+                matches = self.find_matches()
+                if not matches:
+                    break
+                combo += 1
+                points += len(matches) * 10 * combo
+                spawn = {}
+                for g in self.find_match_groups():
+                    cells = g["cells"]
+                    if len(cells) >= 4 and not any(
+                        self.grid[r][c] is not None
+                        and getattr(self.grid[r][c], "is_bomb", False)
+                        for r, c in cells
+                    ):
+                        sr, sc = cells[len(cells) // 2]
+                        if (sr, sc) in matches and (sr, sc) not in spawn:
+                            spawn[(sr, sc)] = g["dir"]
+                for r, c in matches:
+                    if (r, c) not in spawn:
+                        self.grid[r][c] = None
+                for (sr, sc), bdir in spawn.items():
+                    old = self.grid[sr][sc]
+                    color = old.color if old is not None else random.choice(GEM_COLORS)
+                    bomb = Gem(color, sr, sc, is_bomb=True, bomb_dir=bdir)
+                    bomb.current_y = sr * TILE_SIZE
+                    bomb.target_y = sr * TILE_SIZE
+                    bomb.target_row = sr
+                    self.grid[sr][sc] = bomb
+                self.drop_and_refill()
+            self.last_combo = combo
+            self.score += points
+            return True
+
         matches = self.find_matches()
 
         if not matches:
@@ -212,9 +395,23 @@ class Board:
                     tile_rect = pygame.Rect(x + 2, y + 2, TILE_SIZE - 4, TILE_SIZE - 4)
 
                     pygame.draw.rect(surface, gem.color, tile_rect, border_radius=10)
-                    pygame.draw.rect(
-                        surface, (255, 255, 255), tile_rect, width=1, border_radius=10
-                    )
+                    if getattr(gem, "is_bomb", False):
+                        # Glowing Bomb Gem: pulsing white/yellow outline + core dot
+                        import math
+
+                        pulse = (math.sin(pygame.time.get_ticks() * 0.008) + 1) / 2
+                        glow_w = 3 + int(pulse * 3)
+                        pygame.draw.rect(
+                            surface, (255, 255, 180), tile_rect, width=glow_w, border_radius=12
+                        )
+                        cx, cy = tile_rect.center
+                        dot_r = 8 + int(pulse * 3)
+                        pygame.draw.circle(surface, (255, 255, 255), (cx, cy), dot_r)
+                        pygame.draw.circle(surface, (40, 40, 40), (cx, cy), max(3, dot_r - 4))
+                    else:
+                        pygame.draw.rect(
+                            surface, (255, 255, 255), tile_rect, width=1, border_radius=10
+                        )
 
                 if self.selected == (r, c):
                     sel_x = self.offset_x + c * TILE_SIZE
